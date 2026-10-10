@@ -19,6 +19,9 @@ const Spotify := preload("res://spotify.gd")
 const NODE_COUNT := 4
 # How fast parameters morph toward a new mode (1/s): ~3 s to settle.
 const BLEND_RATE := 1.2
+# Global scale on everything beats and treble drive (blasts, flashes,
+# camera punch, sparkle, jitter). 1.0 = the original wild version.
+const REACTIVITY := 0.5
 # In Auto, switch anyway after this long without a song change.
 const FALLBACK_SWITCH := 300.0
 # Below this a band counts as silence (no music, or before Spotify is wired).
@@ -36,6 +39,8 @@ var _draw_mat: ShaderMaterial
 var _camera: Camera3D
 var _spectrum: AudioEffectSpectrumAnalyzerInstance
 var _spotify: Spotify
+var _player: AudioStreamPlayer
+var _quitting := false
 var _hud: Label
 var _toast: Label
 var _toast_tween: Tween
@@ -76,6 +81,7 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		var kv := a.trim_prefix("--").split("=", true, 1)
 		_args[kv[0]] = kv[1] if kv.size() > 1 else ""
+	get_tree().auto_accept_quit = false  # window close goes through _quit()
 	_load_settings()
 	if _args.has("dump"):
 		_dump = FileAccess.open(_args.dump, FileAccess.WRITE)
@@ -155,7 +161,8 @@ func _build_audio() -> void:
 	_spotify.track_changed.connect(_on_track_changed)
 	add_child(_spotify)
 
-	var player := AudioStreamPlayer.new()
+	_player = AudioStreamPlayer.new()
+	var player := _player
 	player.bus = "Capture"
 	add_child(player)
 	if _args.has("selftest"):
@@ -230,13 +237,15 @@ func _process(delta: float) -> void:
 	_process_mat.set_shader_parameter("turb_phase", _turb_phase)
 	_process_mat.set_shader_parameter("bass", _levels.bass)
 	_process_mat.set_shader_parameter("mid", _levels.mid)
-	_process_mat.set_shader_parameter("treble", _levels.treble)
-	_process_mat.set_shader_parameter("kick", _kick)
+	var kick := _kick * REACTIVITY
+	var treble: float = _levels.treble * REACTIVITY
+	_process_mat.set_shader_parameter("treble", treble)
+	_process_mat.set_shader_parameter("kick", kick)
 	_draw_mat.set_shader_parameter("energy", energy)
-	_draw_mat.set_shader_parameter("kick", _kick)
-	_draw_mat.set_shader_parameter("treble", _levels.treble)
+	_draw_mat.set_shader_parameter("kick", kick)
+	_draw_mat.set_shader_parameter("treble", treble)
 	_draw_mat.set_shader_parameter("sparkle_seed", int(_t * 12.0))
-	_env.glow_intensity = sc.glow * (1.0 + (_levels.bass * 0.5 + _kick) * sc.glow_pulse * 0.5)
+	_env.glow_intensity = sc.glow * (1.0 + (_levels.bass * 0.5 + kick) * sc.glow_pulse * 0.5)
 
 	if _hud.visible:
 		_hud.text = "%s  [%s]\nbass   %s\nmid    %s\ntreble %s\nkick   %s" % [
@@ -270,7 +279,7 @@ func _analyse(delta: float) -> void:
 		var v := clampf((db - (_hi[b] - span)) / span, 0.0, 1.0)
 		v = pow(v, 1.5)  # keep quiet parts quiet
 		# Fast attack, slower release.
-		var k := 25.0 if v > _levels[b] else 6.0
+		var k := 15.0 if v > _levels[b] else 4.0
 		_levels[b] = lerpf(_levels[b], v, 1.0 - exp(-k * delta))
 
 	# Beat: the bass envelope jumps above its recent level by more than it
@@ -294,6 +303,24 @@ func _analyse(delta: float) -> void:
 		_since_kick = 0.0
 		_kick_count += 1
 	_kick *= exp(-7.0 * delta)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_quit()
+
+
+func _quit() -> void:
+	if _quitting:
+		return
+	_quitting = true
+	# Stop the mic stream and give the audio server time to drop it;
+	# quitting straight away leaks it (Godot warns at exit). Two frames
+	# were not always enough (2 leaks in 5 runs); 0.25 s was 0 in 10.
+	_player.stop()
+	_player.stream = null
+	await get_tree().create_timer(0.25).timeout
+	get_tree().quit()
 
 
 # --- modes ------------------------------------------------------------------
@@ -399,6 +426,7 @@ func _update_nodes(delta: float) -> void:
 	for v in pos:
 		_centroid += v / NODE_COUNT
 	_process_mat.set_shader_parameter("nodes", pos)
+	_process_mat.set_shader_parameter("centroid", _centroid)
 	_process_mat.set_shader_parameter("axes", axes)
 	_process_mat.set_shader_parameter("hues", hues)
 
@@ -406,9 +434,10 @@ func _update_nodes(delta: float) -> void:
 func _update_camera(delta: float) -> void:
 	var sc: Dictionary = _cur.scene
 	_cam_phase += delta * sc.cam_speed
-	var r: float = sc.cam_dist - _levels.bass * 0.4 - _kick * sc.cam_punch
+	var r: float = sc.cam_dist - _levels.bass * 0.4 - _kick * REACTIVITY * sc.cam_punch
 	_camera.position = _centroid + Vector3(sin(_cam_phase) * r, 1.5 + sin(_t * 0.07) * 1.2, cos(_cam_phase) * r)
 	_camera.look_at(_centroid)
+	_draw_mat.set_shader_parameter("focus_dist", _camera.position.distance_to(_centroid))
 
 
 # --- input ------------------------------------------------------------------
@@ -465,7 +494,7 @@ func _on_menu(id: int) -> void:
 		MENU_METERS:
 			_hud.visible = not _hud.visible
 		MENU_QUIT:
-			get_tree().quit()
+			_quit()
 		_:
 			if id >= 0 and id < Modes.LIST.size():
 				_set_lock(id)
@@ -496,8 +525,8 @@ func _check_cli() -> void:
 				_t, _frame, _levels.bass, _levels.mid, _levels.treble, _kick_count])
 			_kick_count = 0
 		if _frame >= limit:
-			get_tree().quit()
-	elif _args.has("shot") and _frame >= limit:
+			_quit()
+	elif _args.has("shot") and _frame >= limit and not _quitting:
 		get_viewport().get_texture().get_image().save_png(_args.shot)
 		print("saved ", _args.shot)
-		get_tree().quit()
+		_quit()

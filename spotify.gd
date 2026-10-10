@@ -86,11 +86,11 @@ func _route() -> void:
 		for src: String in feeds[dst]:
 			if src not in spotify:
 				OS.execute("pw-link", ["-d", src, dst])
-				print("unlink ", src, " -> ", dst)
+				print_verbose("unlink ", src, " -> ", dst)
 		for src: String in spotify:
 			if src not in feeds[dst]:
 				OS.execute("pw-link", [src, dst])
-				print("link ", src, " -> ", dst)
+				print_verbose("link ", src, " -> ", dst)
 
 
 func _read_track() -> Dictionary:
