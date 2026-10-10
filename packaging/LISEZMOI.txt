@@ -18,7 +18,7 @@ Le son
 
 Touches
   Clic droit     menu (choisir/verrouiller un mode)
-  1 a 6          verrouiller un mode     0  revenir en automatique
+  1 a 7          verrouiller un mode     0  revenir en automatique
   N              mode suivant            F  plein ecran
   D              vu-metres + diagnostic  Echap  quitter
 
