@@ -51,11 +51,17 @@ const WASH_HUES := Vector2(0.8, 1.1)
 # Nodes roam wider horizontally than vertically, so the scene fills a
 # 16:9 screen instead of sitting in a round blob in the middle.
 const WIDE := 1.35
-# How fast parameters morph toward a new mode (1/s): ~3 s to settle.
-const BLEND_RATE := 1.2
+# Seconds a mode change takes, on an S-curve (slow start, slow end).
+# The old exponential ease moved 70 % in the first second: too abrupt
+# (2026-10-10).
+const MORPH_TIME := 6.0
 # Global scale on everything beats and treble drive (blasts, flashes,
-# camera punch, sparkle, jitter). 1.0 = the original wild version.
-const REACTIVITY := 0.5
+# camera punch, sparkle, jitter). 1.0 = the original wild version;
+# 0.5 still read as too jumpy (2026-10-10).
+const REACTIVITY := 0.35
+# The camera follows beats through a low-pass (1/s), so a kick is a soft
+# push in rather than a one-frame jolt (the jolt was the worst part).
+const CAM_SMOOTH := 4.0
 # In Auto, switch anyway after this long without a song change.
 const FALLBACK_SWITCH := 300.0
 # Below this a band counts as silence (no music, or before Spotify is wired).
@@ -107,6 +113,9 @@ var _menu: PopupMenu
 var _mode := 0
 var _locked := -1  # -1 = auto
 var _cur := {}     # live (blended) parameters, same shape as a _modes entry
+var _from := {}    # _cur when the current morph started
+var _morph := 1.0  # morph progress 0..1
+var _cam_push := 0.0
 var _since_switch := 0.0
 var _first_track := true
 
@@ -528,18 +537,22 @@ func _quit() -> void:
 # --- modes ------------------------------------------------------------------
 
 func _blend_params(delta: float) -> void:
-	# delta 0 = snap (first frame); otherwise ease toward the target mode.
+	# Morph from the snapshot taken at the mode change to the target mode;
+	# delta 0 = snap (first frame).
 	var target: Dictionary = _modes[_mode]
-	var w := 1.0 if delta == 0.0 else 1.0 - exp(-BLEND_RATE * delta)
+	_morph = 1.0 if delta == 0.0 else minf(_morph + delta / MORPH_TIME, 1.0)
+	if _from.is_empty():
+		_from = _cur.duplicate(true)
+	var w := smoothstep(0.0, 1.0, _morph)
 	for group: String in Modes.DEFAULTS:
 		var cur: Dictionary = _cur[group]
 		for key in cur:
-			cur[key] = lerpf(cur[key], target[group][key], w)
+			cur[key] = lerpf(_from[group][key], target[group][key], w)
 		if _group_mats.has(group):
 			for key in cur:
 				_set_param(_group_mats[group], key, cur[key])
 	for i in _cur.palette.size():
-		_cur.palette[i] = _cur.palette[i].lerp(target.palette[i], w)
+		_cur.palette[i] = _from.palette[i].lerp(target.palette[i], w)
 
 
 func _set_mode(i: int) -> void:
@@ -547,6 +560,9 @@ func _set_mode(i: int) -> void:
 	if i == _mode:
 		return
 	_mode = i
+	# Start the morph from wherever we are (even mid-morph).
+	_from = _cur.duplicate(true)
+	_morph = 0.0
 	# A scene change in the original: new node count, background wash.
 	_pick_count()
 	_start_wash()
@@ -754,7 +770,8 @@ func _update_nodes(delta: float) -> void:
 func _update_camera(delta: float) -> void:
 	var sc: Dictionary = _cur.scene
 	_cam_phase += delta * sc.cam_speed
-	var r: float = sc.cam_dist - _levels.bass * 0.4 - _kick * REACTIVITY * sc.cam_punch
+	_cam_push = lerpf(_cam_push, _kick * REACTIVITY * sc.cam_punch, 1.0 - exp(-CAM_SMOOTH * delta))
+	var r: float = sc.cam_dist - _levels.bass * 0.4 - _cam_push
 	_camera.position = _centroid + Vector3(sin(_cam_phase) * r, 1.5 + sin(_t * 0.07) * 1.2, cos(_cam_phase) * r)
 	_camera.look_at(_centroid)
 	_draw_mat.set_shader_parameter("focus_dist", _camera.position.distance_to(_centroid))
