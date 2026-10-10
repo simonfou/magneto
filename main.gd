@@ -21,6 +21,9 @@ const Modes := preload("res://modes.gd")
 const Spotify := preload("res://spotify.gd")
 
 const NODE_COUNT := 4
+# Nodes roam wider horizontally than vertically, so the scene fills a
+# 16:9 screen instead of sitting in a round blob in the middle.
+const WIDE := 1.35
 # How fast parameters morph toward a new mode (1/s): ~3 s to settle.
 const BLEND_RATE := 1.2
 # Global scale on everything beats and treble drive (blasts, flashes,
@@ -134,7 +137,9 @@ func _build_environment() -> void:
 
 func _build_camera() -> void:
 	_camera = Camera3D.new()
-	_camera.fov = 55.0
+	# Narrow lens: the scene fills ~1.8x more of the screen than at 55 deg
+	# without the perspective distortion of moving the camera closer.
+	_camera.fov = 32.0
 	add_child(_camera)
 
 
@@ -521,9 +526,9 @@ func _update_nodes(delta: float) -> void:
 		var f := float(i)
 		var s := 0.11 + f * 0.023
 		pos.append(Vector3(
-			sin(_node_phase * s * 1.3 + f * 1.7),
-			sin(_node_phase * s * 0.9 + f * 2.9) * 0.7,
-			cos(_node_phase * s * 1.1 + f * 0.6)) * spread)
+			sin(_node_phase * s * 1.3 + f * 1.7) * WIDE,
+			sin(_node_phase * s * 0.9 + f * 2.9) * 0.45,
+			cos(_node_phase * s * 1.1 + f * 0.6) * WIDE) * spread)
 		var own := Vector3(
 			sin(_t * 0.07 + f * 2.1),
 			cos(_t * 0.05 + f),

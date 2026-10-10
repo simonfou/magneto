@@ -92,7 +92,7 @@ const MODES := [
 			"treble_jitter": 0.3},
 		"dots_draw": {"size": 0.004, "stretch": 0.15, "intensity": 0.35, "size_var": 0.2, "dof": 0.15,
 			"kick_flash": 0.4, "treble_sparkle": 0.4, "white_flash": 0.0},
-		"scene": {"spread": 2.0, "node_speed": 0.6, "axis_align": 0.5, "cam_speed": 0.03,
+		"scene": {"spread": 2.0, "cam_dist": 11.5, "node_speed": 0.6, "axis_align": 0.5, "cam_speed": 0.03,
 			"cam_punch": 0.4, "glow": 0.9, "hue_speed": 0.006, "turb_speed": 0.25, "star_glow": 0.6},
 	},
 ]
