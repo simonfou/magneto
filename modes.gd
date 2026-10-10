@@ -9,6 +9,8 @@
 ##   lines        -> trail_process + trail_draw, thin tube trails
 ##   ribbons      -> trail_process + trail_draw, wide flat ribbons
 ##   scene        -> main.gd (nodes, stars, bubbles, camera, glow, breathing)
+## nodes_min/nodes_max: how many nodes (stars) the mode may show at once;
+## main.gd picks a new count every 8-25 s, plus a rare rest with none.
 ## A system with amount 0 is hidden. Flashes stay low on purpose: in
 ## testing, flashing read as the most chaotic part. Shape: stretch 0 = round dots.
 
@@ -40,7 +42,7 @@ const DEFAULTS := {
 		"cam_punch": 0.8, "glow": 0.8, "glow_pulse": 0.2, "hue_speed": 0.003, "turb_speed": 0.3,
 		"star_size": 0.6, "star_glow": 1.0, "bubble": 0.0, "breath_min": 0.06,
 		"bubble_glass": 1.0, "bubble_scale": 0.97, "star_occlude": 0.0,
-		"moon_dist": 0.0, "moon_lit": 0.0,
+		"moon_dist": 0.0, "moon_lit": 0.0, "nodes_min": 1.0, "nodes_max": 5.0,
 	},
 }
 
@@ -66,7 +68,8 @@ const MODES := [
 		"dots_draw": {"amount": 0.3, "size": 0.012},
 		"lines": {"amount": 1.0, "radial": 1.5, "partner_pull": 1.8, "swirl": 0.8, "turbulence": 0.2, "intensity": 0.8,
 			"reach": 3.0},
-		"scene": {"spread": 2.0},
+		# Arcs need a partner node: never fewer than two.
+		"scene": {"spread": 2.0, "nodes_min": 2.0},
 	},
 	{
 		# Straight needles bursting out of the stars, like a sea urchin.
@@ -99,7 +102,7 @@ const MODES := [
 			"cam_punch": 0.4, "glow": 0.9, "hue_speed": 0.006, "turb_speed": 0.25, "star_glow": 0.6},
 	},
 	{
-		# Experiment (branch black-bubbles), after the original's 0:15-0:18:
+		# After the original's 0:15-0:18:
 		# black "moons" orbiting beside each star. Unlit, they only show by
 		# what they hide (bites out of the dot cloud and dust) plus a thin
 		# crescent where their star lights the edge; they eclipse it too.
@@ -109,7 +112,7 @@ const MODES := [
 			"moon_pull": 1.5},
 		"dots_draw": {"size": 0.018, "size_var": 0.8, "dof": 0.3},
 		"scene": {"bubble": 1.0, "bubble_glass": 0.0, "bubble_scale": 0.6, "moon_dist": 1.3, "moon_lit": 1.0,
-			"star_occlude": 1.0, "spread": 2.4},
+			"star_occlude": 1.0, "spread": 2.4, "nodes_max": 4.0},
 	},
 ]
 

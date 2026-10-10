@@ -8,19 +8,46 @@ extends Node3D
 ## white star and an optional black bubble per node; each mode doses them.
 ## The music's overall loudness drives "presence": quiet passages show
 ## little more than the stars, loud ones fill out (like the original).
+## The number of nodes varies too (0 to 5, a new count every 8-25 s, landing
+## on a beat), and each mode change is marked by a brief colour wash of the
+## background, both measured on the original video.
 ##
 ## Keys: right-click = menu, 1-7 = lock a mode, 0 or A = auto, N = next,
 ##       F / F11 = fullscreen, D = level meters, Esc = quit.
 ## CLI (after `--`): --shot=<png> [--frames=N]  save a frame and quit
 ##                   --mode=<index>             lock a mode for this run
+##                   --nodes=<n>                fixed node count for this run
+##                   --wash=<frames>            start a background wash this many
+##                                              frames before the shot (peaks 1.5 s in)
 ##                   --selftest                 feed a test tone, print levels, quit
+##                   --tone                     feed the test tone (shots without music)
 ##                   --meter                    print live capture levels, quit
 ##                   --dump=<csv>               log raw band dB every frame (tuning)
 
 const Modes := preload("res://modes.gd")
 const Spotify := preload("res://spotify.gd")
 
-const NODE_COUNT := 4
+# Node slots; how many show at once varies (see _pick_count).
+const NODE_SLOTS := 6
+# Seconds for a node to fade fully in or out.
+const NODE_FADE := 1.2
+# How long a node count holds before the next one (seconds, random).
+const COUNT_HOLD := Vector2(8.0, 25.0)
+# Chance that the next count is a rest with no node at all, held briefly:
+# only drifting dust, as in the original around 0:46-0:56.
+const REST_CHANCE := 0.08
+const REST_HOLD := Vector2(4.0, 8.0)
+# Background wash on a mode change, after the original's 0:48-0:52: the
+# colour rises for ~1.5 s while its hue slides (there red -> magenta ->
+# deep blue), then fades back to black. Measured peak ~83/255 in sRGB.
+const WASH_RISE := 1.5
+const WASH_FALL := 0.8  # 1/s, exponential (ACES darkens the tail further)
+const WASH_TIME := 4.5
+const WASH_PEAK := 0.33
+const WASH_SLIDE := -0.27  # hue turn over the rise
+# Start hues: red to violet, so the wash stays in the original's family
+# (full-saturation green or yellow read as a green screen).
+const WASH_HUES := Vector2(0.8, 1.1)
 # Nodes roam wider horizontally than vertically, so the scene fills a
 # 16:9 screen instead of sitting in a round blob in the middle.
 const WIDE := 1.35
@@ -100,6 +127,14 @@ var _kick := 0.0
 var _since_kick := 1.0
 var _kick_count := 0
 var _centroid := Vector3.ZERO
+# Variable node count: which slots are on, and their eased weights (0..1).
+var _node_on: Array[bool] = []
+var _node_w := PackedFloat32Array()
+var _count_timer := 0.0
+var _fixed_nodes := -1  # --nodes
+# Background wash: seconds since it started, < 0 = none.
+var _wash := -1.0
+var _wash_hue := 0.0
 # Breathing: overall loudness against the loudest recent passage.
 var _loud_hi := -200.0
 var _presence := 0.0
@@ -123,6 +158,13 @@ func _ready() -> void:
 		_locked = clampi(int(_args.mode), 0, _modes.size() - 1)
 	_mode = maxi(_locked, 0)
 	_cur = _modes[_mode].duplicate(true)
+	if _args.has("nodes"):
+		_fixed_nodes = clampi(int(_args.nodes), 0, NODE_SLOTS)
+	_node_on.resize(NODE_SLOTS)
+	_node_w.resize(NODE_SLOTS)
+	_pick_count()
+	for i in NODE_SLOTS:
+		_node_w[i] = 1.0 if _node_on[i] else 0.0
 
 	_build_environment()
 	_build_camera()
@@ -162,7 +204,9 @@ func _build_particles() -> void:
 	quad.size = Vector2.ONE
 	quad.material = _draw_mat
 	_dots = GPUParticles3D.new()
-	_dots.amount = 6000
+	# More than the 4-node version had: with up to 6 nodes and stray dust
+	# each cluster would otherwise look thin.
+	_dots.amount = 8000
 	_dots.lifetime = 8.0
 	_dots.preprocess = 4.0
 	_dots.process_material = _process_mat
@@ -191,8 +235,6 @@ func _build_particles() -> void:
 		p.fixed_fps = 60
 		p.randomness = 0.5
 		p.visibility_aabb = AABB(Vector3(-14, -14, -14), Vector3(28, 28, 28))
-	for m: ShaderMaterial in [_process_mat, _lines_proc, _rib_proc]:
-		m.set_shader_parameter("node_count", NODE_COUNT)
 	_group_mats = {
 		"dots_process": [_process_mat],
 		"dots_draw": [_draw_mat],
@@ -204,7 +246,7 @@ func _build_particles() -> void:
 	var sphere := SphereMesh.new()
 	sphere.radial_segments = 48
 	sphere.rings = 24
-	for i in NODE_COUNT:
+	for i in NODE_SLOTS:
 		var star := MeshInstance3D.new()
 		star.mesh = star_mesh
 		_star_mats.append(_shader_mat("res://shaders/star.gdshader"))
@@ -276,7 +318,7 @@ func _build_audio() -> void:
 	var player := _player
 	player.bus = "Capture"
 	add_child(player)
-	if _args.has("selftest"):
+	if _args.has("selftest") or _args.has("tone"):
 		var gen := AudioStreamGenerator.new()
 		gen.mix_rate = 44100.0
 		player.stream = gen
@@ -348,6 +390,8 @@ func _process(delta: float) -> void:
 	if _loop_gen:
 		_loop_gen.push_buffer(_loopback.take_frames(_loop_gen.get_frames_available()))
 	_analyse(delta)
+	_update_count(delta)
+	_update_wash(delta)
 
 	_since_switch += delta
 	if _locked < 0 and _since_switch > FALLBACK_SWITCH:
@@ -380,8 +424,8 @@ func _process(delta: float) -> void:
 	_env.glow_intensity = sc.glow * (1.0 + (_levels.bass * 0.5 + kick) * sc.glow_pulse * 0.5)
 
 	if _hud.visible:
-		_hud.text = "%s  [%s]\nbass     %s\nmid      %s\ntreble   %s\nkick     %s\npresence %s" % [
-			_modes[_mode].name, "auto" if _locked < 0 else "locked",
+		_hud.text = "%s  [%s]  nodes %d\nbass     %s\nmid      %s\ntreble   %s\nkick     %s\npresence %s" % [
+			_modes[_mode].name, "auto" if _locked < 0 else "locked", _node_on.count(true),
 			_bar(_levels.bass), _bar(_levels.mid), _bar(_levels.treble), _bar(_kick), _bar(_presence)]
 		if _loopback:
 			_hud.text += "\ncapture  " + _loopback.get_status()
@@ -499,8 +543,76 @@ func _blend_params(delta: float) -> void:
 
 
 func _set_mode(i: int) -> void:
-	_mode = i
 	_since_switch = 0.0
+	if i == _mode:
+		return
+	_mode = i
+	# A scene change in the original: new node count, background wash.
+	_pick_count()
+	_start_wash()
+
+
+## Choose how many nodes show next (within the mode's range, or a rare
+## rest with none) and switch random slots on or off to match.
+func _pick_count() -> void:
+	var sc: Dictionary = _modes[_mode].scene
+	var have := _node_on.count(true)
+	var n := _fixed_nodes
+	if n < 0:
+		if randf() < REST_CHANCE and have > 0:
+			n = 0
+		else:
+			var lo := int(sc.nodes_min)
+			var hi := int(sc.nodes_max)
+			n = randi_range(lo, hi)
+			if n == have and hi > lo:  # always a visible change
+				n = lo + (n - lo + 1 + randi() % (hi - lo)) % (hi - lo + 1)
+	var on: Array[int] = []
+	var off: Array[int] = []
+	for i in NODE_SLOTS:
+		if _node_on[i]:
+			on.append(i)
+		else:
+			off.append(i)
+	on.shuffle()
+	off.shuffle()
+	while on.size() > n:
+		_node_on[on.pop_back()] = false
+	while on.size() < n:
+		var i: int = off.pop_back()
+		_node_on[i] = true
+		on.append(i)
+	var hold := REST_HOLD if n == 0 else COUNT_HOLD
+	_count_timer = randf_range(hold.x, hold.y)
+
+
+func _update_count(delta: float) -> void:
+	_count_timer -= delta
+	# Once due, wait for a beat so the change lands on the music (or give up
+	# waiting after 3 s).
+	if _count_timer <= 0.0 and (_since_kick == 0.0 or _count_timer < -3.0):
+		_pick_count()
+	for i in NODE_SLOTS:
+		_node_w[i] = move_toward(_node_w[i], 1.0 if _node_on[i] else 0.0, delta / NODE_FADE)
+
+
+func _start_wash() -> void:
+	_wash = 0.0
+	_wash_hue = randf_range(WASH_HUES.x, WASH_HUES.y)
+
+
+func _update_wash(delta: float) -> void:
+	if _wash < 0.0:
+		return
+	_wash += delta
+	if _wash >= WASH_TIME:
+		_wash = -1.0
+		_env.background_color = Color.BLACK
+		return
+	var rise := smoothstep(0.0, WASH_RISE, _wash)
+	var v := rise * exp(-maxf(_wash - WASH_RISE, 0.0) * WASH_FALL)
+	var h := fposmod(_wash_hue + WASH_SLIDE * rise, 1.0)
+	_env.background_color = Color.from_hsv(h, 1.0, WASH_PEAK * v)
 
 
 func _next_mode() -> void:
@@ -566,7 +678,7 @@ func _update_nodes(delta: float) -> void:
 	var spread: float = sc.spread * (0.65 + 0.35 * _presence) * (1.0 + _levels.bass * 0.2)
 	# Shared axis that "align" pulls every node toward (disks in Galaxy).
 	var common := Vector3(sin(_t * 0.03) * 0.3, 1.0, cos(_t * 0.02) * 0.3).normalized()
-	for i in NODE_COUNT:
+	for i in NODE_SLOTS:
 		var f := float(i)
 		var s := 0.11 + f * 0.023
 		pos.append(Vector3(
@@ -578,14 +690,25 @@ func _update_nodes(delta: float) -> void:
 			cos(_t * 0.05 + f),
 			sin(_t * 0.06 + f * 0.4)).normalized()
 		axes.append(own.slerp(common, sc.axis_align).normalized())
-		# Palette drifts slowly so the scene changes colour over a song.
-		var c: Color = _cur.palette[i]
-		c.h = fposmod(c.h + _hue_phase, 1.0)
+		# Palette drifts slowly so the scene changes colour over a song; slots
+		# past the palette reuse it with a hue offset.
+		var pal: Array = _cur.palette
+		var c: Color = pal[i % pal.size()]
+		c.h = fposmod(c.h + _hue_phase + (0.08 if i >= pal.size() else 0.0), 1.0)
 		hues.append(Vector3(c.r, c.g, c.b))
-	_centroid = Vector3.ZERO
-	for v in pos:
-		_centroid += v / NODE_COUNT
+	# Centre of the live nodes (all of them, a little, so it is defined
+	# with none alive), eased so the camera pans rather than jumps when
+	# nodes come and go.
+	var sum := Vector3.ZERO
+	var total := 0.0
+	for i in NODE_SLOTS:
+		var w := _node_w[i] + 0.02
+		sum += pos[i] * w
+		total += w
+	var target := sum / total
+	_centroid = target if delta == 0.0 else _centroid.lerp(target, 1.0 - exp(-1.5 * delta))
 	var procs := [_process_mat, _lines_proc, _rib_proc]
+	_set_param(procs, "weights", _node_w)
 	_set_param(procs, "nodes", pos)
 	_set_param(procs, "centroid", _centroid)
 	_set_param(procs, "axes", axes)
@@ -598,21 +721,23 @@ func _update_nodes(delta: float) -> void:
 	var bubble_r: float = (dp.shell_min + dp.shell_max) * 0.5 * inflate * sc.bubble_scale * sc.bubble
 	var star_s: float = sc.star_size * (1.0 + _levels.bass * 0.15 + kick * 0.2)
 	var moons := PackedVector3Array()
-	for i in NODE_COUNT:
+	for i in NODE_SLOTS:
 		var hue := Color(hues[i].x, hues[i].y, hues[i].z)
+		var w := _node_w[i]
+		_stars[i].visible = w > 0.001
 		_stars[i].position = pos[i]
-		_stars[i].scale = Vector3.ONE * star_s
+		_stars[i].scale = Vector3.ONE * maxf(star_s * w, 0.001)
 		var tint := Color.WHITE.lerp(hue, 0.15)
 		for sm: ShaderMaterial in [_star_mats[i], _star_occluded[i]]:
 			sm.set_shader_parameter("glow", sc.star_glow)
 			sm.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
-		_bubbles[i].visible = bubble_r > 0.02
+		_bubbles[i].visible = bubble_r * w > 0.02
 		# moon_dist > 0: the ball orbits beside its star instead of around it.
 		var ma := _t * 0.15 + float(i) * 1.7
 		var moon_off: Vector3 = Vector3(cos(ma), sin(ma * 0.7) * 0.4, sin(ma)) * sc.moon_dist
 		_bubbles[i].position = pos[i] + moon_off
 		moons.append(pos[i] + moon_off)
-		_bubbles[i].scale = Vector3.ONE * maxf(bubble_r, 0.001)
+		_bubbles[i].scale = Vector3.ONE * maxf(bubble_r * w, 0.001)
 		var bm: ShaderMaterial = _bubbles[i].material_override
 		bm.set_shader_parameter("rim_color", hues[i])
 		bm.set_shader_parameter("glass", sc.bubble_glass)
@@ -714,6 +839,8 @@ func _feed_test_tone() -> void:
 
 func _check_cli() -> void:
 	var limit := int(_args.get("frames", "240"))
+	if _args.has("wash") and _frame == limit - int(_args.wash):
+		_start_wash()
 	if _args.has("selftest") or _args.has("meter"):
 		if _frame % 30 == 0:
 			print("t %5.1f  frame %d  bass %.2f  mid %.2f  treble %.2f  kicks %d  presence %.2f  fps %d" % [
