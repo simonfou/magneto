@@ -9,7 +9,7 @@ extends Node3D
 ## The music's overall loudness drives "presence": quiet passages show
 ## little more than the stars, loud ones fill out (like the original).
 ##
-## Keys: right-click = menu, 1-6 = lock a mode, 0 or A = auto, N = next,
+## Keys: right-click = menu, 1-7 = lock a mode, 0 or A = auto, N = next,
 ##       F / F11 = fullscreen, D = level meters, Esc = quit.
 ## CLI (after `--`): --shot=<png> [--frames=N]  save a frame and quit
 ##                   --mode=<index>             lock a mode for this run
@@ -58,6 +58,8 @@ var _lines: GPUParticles3D
 var _ribbons: GPUParticles3D
 var _stars: Array[MeshInstance3D] = []
 var _bubbles: Array[MeshInstance3D] = []
+var _star_mats: Array[ShaderMaterial] = []
+var _star_occluded: Array[ShaderMaterial] = []
 var _group_mats := {}  # modes.gd group -> materials that receive it
 var _uniforms := {}    # material -> names of the uniforms its shader has
 var _camera: Camera3D
@@ -205,7 +207,9 @@ func _build_particles() -> void:
 	for i in NODE_COUNT:
 		var star := MeshInstance3D.new()
 		star.mesh = star_mesh
-		star.material_override = _shader_mat("res://shaders/star.gdshader")
+		_star_mats.append(_shader_mat("res://shaders/star.gdshader"))
+		_star_occluded.append(_shader_mat("res://shaders/star_occluded.gdshader"))
+		star.material_override = _star_mats[i]
 		_stars.append(star)
 		var bubble := MeshInstance3D.new()
 		bubble.mesh = sphere
@@ -591,21 +595,24 @@ func _update_nodes(delta: float) -> void:
 	var dp: Dictionary = _cur.dots_process
 	# Bubbles track the dots' shell so the dots sit on their surface.
 	var inflate: float = 1.0 + _levels.bass * dp.bass_shell + kick * dp.kick_shell
-	var bubble_r: float = (dp.shell_min + dp.shell_max) * 0.5 * inflate * 0.97 * sc.bubble
+	var bubble_r: float = (dp.shell_min + dp.shell_max) * 0.5 * inflate * sc.bubble_scale * sc.bubble
 	var star_s: float = sc.star_size * (1.0 + _levels.bass * 0.15 + kick * 0.2)
 	for i in NODE_COUNT:
 		var hue := Color(hues[i].x, hues[i].y, hues[i].z)
 		_stars[i].position = pos[i]
 		_stars[i].scale = Vector3.ONE * star_s
-		var sm: ShaderMaterial = _stars[i].material_override
-		sm.set_shader_parameter("glow", sc.star_glow)
 		var tint := Color.WHITE.lerp(hue, 0.15)
-		sm.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
+		for sm: ShaderMaterial in [_star_mats[i], _star_occluded[i]]:
+			sm.set_shader_parameter("glow", sc.star_glow)
+			sm.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
 		_bubbles[i].visible = bubble_r > 0.02
 		_bubbles[i].position = pos[i]
 		_bubbles[i].scale = Vector3.ONE * maxf(bubble_r, 0.001)
 		var bm: ShaderMaterial = _bubbles[i].material_override
 		bm.set_shader_parameter("rim_color", hues[i])
+		bm.set_shader_parameter("glass", sc.bubble_glass)
+		# Black balls hide the star inside them; elsewhere stars shine through.
+		_stars[i].material_override = _star_occluded[i] if sc.star_occlude > 0.5 else _star_mats[i]
 
 
 func _update_camera(delta: float) -> void:

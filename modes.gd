@@ -38,6 +38,7 @@ const DEFAULTS := {
 		"spread": 2.2, "node_speed": 1.0, "axis_align": 0.0, "cam_dist": 9.5, "cam_speed": 0.05,
 		"cam_punch": 0.8, "glow": 0.8, "glow_pulse": 0.2, "hue_speed": 0.003, "turb_speed": 0.3,
 		"star_size": 0.6, "star_glow": 1.0, "bubble": 0.0, "breath_min": 0.06,
+		"bubble_glass": 1.0, "bubble_scale": 0.97, "star_occlude": 0.0,
 	},
 }
 
@@ -94,6 +95,18 @@ const MODES := [
 			"kick_flash": 0.4, "treble_sparkle": 0.4, "white_flash": 0.0},
 		"scene": {"spread": 2.0, "cam_dist": 11.5, "node_speed": 0.6, "axis_align": 0.5, "cam_speed": 0.03,
 			"cam_punch": 0.4, "glow": 0.9, "hue_speed": 0.006, "turb_speed": 0.25, "star_glow": 0.6},
+	},
+	{
+		# Experiment (branch black-bubbles): opaque black balls with rings of
+		# dots orbiting just outside them; the ball hides the back of each
+		# ring, leaving the "C" crescents of the original (~0:28).
+		"name": "Black holes",
+		"palette": [Color(0.3, 1.0, 0.8), Color(0.25, 0.6, 1.0), Color(0.5, 1.0, 0.7), Color(0.85, 1.0, 0.95)],
+		"dots_process": {"shell_min": 1.25, "shell_max": 1.5, "flatten": 2.5, "swirl": 1.2, "attraction": 4.0,
+			"turbulence": 0.03, "treble_jitter": 0.15, "kick_push": 1.0},
+		"dots_draw": {"size": 0.02, "size_var": 0.6, "dof": 0.3},
+		"scene": {"bubble": 1.0, "bubble_glass": 0.0, "bubble_scale": 1.1, "spread": 2.4, "cam_dist": 10.0,
+			"star_occlude": 1.0},
 	},
 ]
 
