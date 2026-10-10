@@ -30,12 +30,12 @@ const DEFAULTS := {
 	"lines": {
 		"amount": 0.0, "radial": 3.0, "partner_pull": 0.0, "swirl": 0.0, "turbulence": 0.0,
 		"turb_scale": 1.0, "drag": 1.5, "kick_burst": 2.0, "intensity": 0.6, "white_share": 0.3,
-		"reach": 2.5,
+		"reach": 2.5, "density": 1.0, "bead": 0.0,
 	},
 	"ribbons": {
 		"amount": 0.0, "radial": 0.6, "partner_pull": 0.0, "swirl": 2.0, "turbulence": 1.2,
 		"turb_scale": 0.8, "drag": 1.5, "twist": 2.0, "kick_burst": 1.0, "intensity": 0.3,
-		"white_share": 0.6, "reach": 2.2,
+		"white_share": 0.6, "reach": 2.2, "density": 1.0, "bead": 0.0,
 	},
 	"scene": {
 		"spread": 2.2, "node_speed": 1.0, "axis_align": 0.0, "cam_dist": 9.5, "cam_speed": 0.05,
@@ -62,13 +62,23 @@ const MODES := [
 		"scene": {"bubble": 1.0, "spread": 2.6},
 	},
 	{
-		# Thin curved lines arcing from star to star, like magnetic field lines.
+		# Fine lines streaming out of the stars, a mix of the
+		# original's 0:44-0:50 (calm: few faint, nearly straight lines, a
+		# coloured bead at each tip) and 0:32-0:37 (magenta and violet, varied
+		# directions, scattered coloured dots). v1, arcs bundled from star to
+		# star, read as an aggressive white cocoon. Each line bends gently on
+		# a slow, wide flow, its own phase of it, so directions vary.
 		"name": "Field lines",
 		"palette": [Color(1.0, 0.3, 0.9), Color(0.55, 0.4, 1.0), Color(0.9, 0.5, 1.0), Color(0.4, 0.5, 1.0)],
-		"dots_draw": {"amount": 0.3, "size": 0.012},
-		"lines": {"amount": 1.0, "radial": 1.5, "partner_pull": 1.8, "swirl": 0.8, "turbulence": 0.2, "intensity": 0.8,
-			"reach": 3.0},
-		# Arcs need a partner node: never fewer than two.
+		"dots_process": {"shell_min": 0.5, "shell_max": 2.4, "turbulence": 0.5, "turb_scale": 0.5},
+		"dots_draw": {"amount": 0.35, "size": 0.02, "dof": 0.3},
+		# A soft beat burst: a hard one kinks every line on each beat.
+		# Turbulence stays low: when the bass drops, the outward speed drops
+		# and a strong flow would swing every line twice a second (zigzags).
+		"lines": {"amount": 1.0, "radial": 2.8, "partner_pull": 0.0, "swirl": 0.0, "turbulence": 0.12,
+			"turb_scale": 0.3, "drag": 1.2, "intensity": 0.2, "white_share": 0.05, "reach": 5.0,
+			"kick_burst": 0.3, "density": 0.3, "bead": 1.0},
+		# Two stars at least, as in the original's passage.
 		"scene": {"spread": 2.0, "nodes_min": 2.0},
 	},
 	{

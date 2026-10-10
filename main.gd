@@ -170,8 +170,10 @@ func _build_particles() -> void:
 	var tube := TubeTrailMesh.new()
 	tube.radius = 0.006
 	tube.radial_steps = 4
-	tube.sections = 12
-	tube.section_length = 0.1
+	# 24 short sections rather than 12 long ones: curved lines stay smooth
+	# instead of showing their corners (Field lines).
+	tube.sections = 24
+	tube.section_length = 0.05
 	_lines_proc = _shader_mat("res://shaders/trail_process.gdshader")
 	_lines_draw = _shader_mat("res://shaders/trail_draw.gdshader")
 	_lines = _trail_system(tube, _lines_proc, _lines_draw, 900, 2.0, 0.7)
