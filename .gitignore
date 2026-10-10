@@ -1,3 +1,4 @@
 .godot/
 CLAUDE.md
 *.png
+build/

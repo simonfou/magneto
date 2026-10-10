@@ -1,0 +1,22 @@
+#!/usr/bin/env python
+# Builds the wincap GDExtension (system-audio capture for the Windows build).
+#   Windows (cross, from Fedora): scons platform=windows use_mingw=yes target=template_release
+#   Linux stub (native):          scons platform=linux target=template_release
+# Bindings come from this Godot's own API dump: api/extension_api.json
+# (`godot --headless --dump-extension-api`), since godot-cpp has no 4.7 branch.
+import os
+
+ARGUMENTS.setdefault("custom_api_file", "api/extension_api.json")
+env = SConscript("godot-cpp/SConstruct")
+env.Append(CPPPATH=["src/"])
+
+if env["platform"] == "windows":
+    env.Append(LIBS=["ole32", "uuid"])
+    # Self-contained DLL: no MinGW runtime DLLs needed on the friend's PC.
+    env.Append(LINKFLAGS=["-static", "-static-libgcc", "-static-libstdc++"])
+
+library = env.SharedLibrary(
+    "../bin/libwincap{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
+    source=Glob("src/*.cpp"),
+)
+Default(library)

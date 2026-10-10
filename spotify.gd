@@ -23,6 +23,17 @@ var _re_title := RegEx.create_from_string("'xesam:title': <(?:'((?:[^'\\\\]|\\\\
 var _re_artist := RegEx.create_from_string("'xesam:artist': <\\[(?:'((?:[^'\\\\]|\\\\.)*)'|\"((?:[^\"\\\\]|\\\\.)*)\")")
 
 
+func _ready() -> void:
+	# pw-link and gdbus are Linux tools; elsewhere this node stays idle and
+	# main.gd falls back to silence-gap song detection.
+	set_process(OS.get_name() == "Linux")
+
+
+## True once Spotify has reported a track over MPRIS.
+func has_track_info() -> bool:
+	return _track_id != ""
+
+
 func _process(delta: float) -> void:
 	_timer -= delta
 	if _timer > 0.0 or _task != -1:

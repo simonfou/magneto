@@ -1,0 +1,10 @@
+[configuration]
+
+entry_symbol = "wincap_library_init"
+compatibility_minimum = "4.4"
+reloadable = false
+
+[libraries]
+
+windows.x86_64 = "res://bin/libwincap.windows.template_release.x86_64.dll"
+linux.x86_64 = "res://bin/libwincap.linux.template_release.x86_64.so"

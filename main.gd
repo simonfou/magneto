@@ -33,6 +33,11 @@ const REACTIVITY := 0.5
 const FALLBACK_SWITCH := 300.0
 # Below this a band counts as silence (no music, or before Spotify is wired).
 const SILENCE_DB := -100.0
+# Windows build: capture everything the PC plays except this program.
+const EXCLUDE_PROCESS := "Discord.exe"
+# Without Spotify's track info (Windows), this much silence followed by
+# sound counts as a new song.
+const GAP_SECONDS := 0.4
 const SETTINGS_PATH := "user://settings.cfg"
 const MENU_AUTO := 100
 const MENU_NEXT := 200
@@ -60,6 +65,11 @@ var _spectrum: AudioEffectSpectrumAnalyzerInstance
 var _spotify: Spotify
 var _player: AudioStreamPlayer
 var _quitting := false
+# Windows: system-audio capture from the wincap GDExtension, fed into the
+# same analyzer bus through a generator.
+var _loopback: RefCounted
+var _loop_gen: AudioStreamGeneratorPlayback
+var _silent_for := 0.0
 var _hud: Label
 var _toast: Label
 var _toast_tween: Tween
@@ -268,6 +278,19 @@ func _build_audio() -> void:
 		player.stream = gen
 		player.play()
 		_test_gen = player.get_stream_playback()
+	elif OS.get_name() == "Windows":
+		# Everything the PC plays except Discord, via the wincap GDExtension
+		# (Windows process-loopback API), pushed through a generator so the
+		# analyzer bus works exactly as on Linux.
+		if ClassDB.class_exists("LoopbackCapture"):
+			_loopback = ClassDB.instantiate("LoopbackCapture")
+			_loopback.start(EXCLUDE_PROCESS)
+			var gen := AudioStreamGenerator.new()
+			gen.mix_rate = _loopback.get_mix_rate()
+			gen.buffer_length = 0.1
+			player.stream = gen
+			player.play()
+			_loop_gen = player.get_stream_playback()
 	else:
 		player.stream = AudioStreamMicrophone.new()
 		player.play()
@@ -318,6 +341,8 @@ func _process(delta: float) -> void:
 	_t += delta
 	if _test_gen:
 		_feed_test_tone()
+	if _loop_gen:
+		_loop_gen.push_buffer(_loopback.take_frames(_loop_gen.get_frames_available()))
 	_analyse(delta)
 
 	_since_switch += delta
@@ -354,6 +379,8 @@ func _process(delta: float) -> void:
 		_hud.text = "%s  [%s]\nbass     %s\nmid      %s\ntreble   %s\nkick     %s\npresence %s" % [
 			_modes[_mode].name, "auto" if _locked < 0 else "locked",
 			_bar(_levels.bass), _bar(_levels.mid), _bar(_levels.treble), _bar(_kick), _bar(_presence)]
+		if _loopback:
+			_hud.text += "\ncapture  " + _loopback.get_status()
 	_frame += 1
 	_check_cli()
 
@@ -398,6 +425,15 @@ func _analyse(delta: float) -> void:
 	var pk := 2.5 if target > _presence else 0.7
 	_presence = lerpf(_presence, target, 1.0 - exp(-pk * delta))
 
+	# Song change by silence gap, when there is no Spotify track info
+	# (Windows): a short stretch of digital silence, then sound again.
+	if wide_db < SILENCE_DB:
+		_silent_for += delta
+	else:
+		if _silent_for > GAP_SECONDS and not _spotify.has_track_info():
+			_on_track_changed("", "")
+		_silent_for = 0.0
+
 	# Beat: the bass envelope jumps above its recent level by more than it
 	# usually does for this track. Thresholds tuned offline on --dump data
 	# (~1.7 beats/s on metal; the analyzer only updates ~21 times/s).
@@ -435,6 +471,8 @@ func _quit() -> void:
 	# were not always enough (2 leaks in 5 runs); 0.25 s was 0 in 10.
 	_player.stop()
 	_player.stream = null
+	if _loopback:
+		_loopback.stop()
 	await get_tree().create_timer(0.25).timeout
 	get_tree().quit()
 
@@ -481,6 +519,8 @@ func _on_track_changed(title: String, artist: String) -> void:
 	if _locked < 0 and not _first_track:
 		_next_mode()
 	_first_track = false
+	if title == "":
+		return  # gap-detected song change: nothing to announce
 	var lines := [title]
 	if artist != "":
 		lines.append(artist)
