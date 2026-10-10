@@ -26,6 +26,11 @@ uniform float turb_phase = 0.0;  // integrated in main.gd
 uniform float spawn_radius = 1.6;
 uniform vec3 centroid = vec3(0.0);  // centre of the nodes, from main.gd
 uniform float bound = 3.5;           // fence radius around the centroid
+uniform float dust = 0.0;            // share of particles thrown far out as dust
+uniform float dust_spread = 3.0;     // how much further out the dust sits
+uniform vec3 moons[MAX_NODES];       // black balls (mode 7), from main.gd
+uniform float moon_r = 0.0;          // their radius
+uniform float moon_pull = 0.0;       // their gravity: spiral in, vanish inside
 
 // Audio, all roughly 0..1, and how hard each one hits.
 uniform float bass = 0.0;
@@ -77,6 +82,9 @@ void process() {
 	// Each particle settles on its own shell radius; bass and beats inflate it.
 	float shell = mix(shell_min, shell_max, hash(INDEX * 2654435761u + 7u));
 	shell *= 1.0 + bass * bass_shell + kick * kick_shell;
+	if (hash(INDEX * 1597334677u + 99u) < dust) {
+		shell *= dust_spread;
+	}
 	vec3 flow = vec3(0.0);
 
 	// Home node: spring onto the shell (no falloff, so it never escapes),
@@ -96,6 +104,20 @@ void process() {
 		float ri = length(di) + 1e-3;
 		float f = 1.0 / (1.0 + ri * ri * falloff);
 		flow += cross(axes[i], di / ri) * swirl * 0.3 * f;
+	}
+	// Black holes: pull nearby dots in and spin them around; once inside
+	// the opaque ball they are hidden, so the hole seems to swallow them.
+	if (moon_pull > 0.0 && moon_r > 0.01) {
+		for (int i = 0; i < node_count; i++) {
+			vec3 dm = moons[i] - p;
+			float rm = length(dm) + 1e-3;
+			float reach = moon_r * 3.0;
+			if (rm < reach) {
+				float g = moon_pull * (1.0 - rm / reach) * (moon_r / rm);
+				flow += dm / rm * g * 2.0;
+				flow += cross(axes[i], dm / rm) * g * 1.5;
+			}
+		}
 	}
 	flow += flow_noise(p * turb_scale, turb_phase) * turbulence * (1.0 + mid * mid_turb);
 	// Treble: jitter so the cloud shimmers.

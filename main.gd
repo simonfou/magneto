@@ -597,6 +597,7 @@ func _update_nodes(delta: float) -> void:
 	var inflate: float = 1.0 + _levels.bass * dp.bass_shell + kick * dp.kick_shell
 	var bubble_r: float = (dp.shell_min + dp.shell_max) * 0.5 * inflate * sc.bubble_scale * sc.bubble
 	var star_s: float = sc.star_size * (1.0 + _levels.bass * 0.15 + kick * 0.2)
+	var moons := PackedVector3Array()
 	for i in NODE_COUNT:
 		var hue := Color(hues[i].x, hues[i].y, hues[i].z)
 		_stars[i].position = pos[i]
@@ -606,13 +607,23 @@ func _update_nodes(delta: float) -> void:
 			sm.set_shader_parameter("glow", sc.star_glow)
 			sm.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
 		_bubbles[i].visible = bubble_r > 0.02
-		_bubbles[i].position = pos[i]
+		# moon_dist > 0: the ball orbits beside its star instead of around it.
+		var ma := _t * 0.15 + float(i) * 1.7
+		var moon_off: Vector3 = Vector3(cos(ma), sin(ma * 0.7) * 0.4, sin(ma)) * sc.moon_dist
+		_bubbles[i].position = pos[i] + moon_off
+		moons.append(pos[i] + moon_off)
 		_bubbles[i].scale = Vector3.ONE * maxf(bubble_r, 0.001)
 		var bm: ShaderMaterial = _bubbles[i].material_override
 		bm.set_shader_parameter("rim_color", hues[i])
 		bm.set_shader_parameter("glass", sc.bubble_glass)
+		bm.set_shader_parameter("lit", sc.moon_lit)
+		bm.set_shader_parameter("light_pos", pos[i])
+		bm.set_shader_parameter("light_color", Vector3(tint.r, tint.g, tint.b))
 		# Black balls hide the star inside them; elsewhere stars shine through.
 		_stars[i].material_override = _star_occluded[i] if sc.star_occlude > 0.5 else _star_mats[i]
+	# Black-hole gravity (mode 7): the dots feel each ball and its size.
+	_process_mat.set_shader_parameter("moons", moons)
+	_process_mat.set_shader_parameter("moon_r", bubble_r)
 
 
 func _update_camera(delta: float) -> void:
