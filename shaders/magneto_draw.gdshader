@@ -9,6 +9,8 @@ render_mode unshaded, blend_add, depth_draw_never, cull_disabled, skip_vertex_tr
 uniform float size = 0.006;
 uniform float stretch = 0.09;
 uniform float intensity = 0.45;
+uniform float amount = 1.0;      // how much this mode uses the dots (0 = hidden)
+uniform float presence = 1.0;    // breathing, from main.gd: share of particles shown
 uniform float max_len = 0.35;    // cap on streak length (world units)
 uniform float size_var = 0.0;    // 0 = all the same size, 1 = a few big soft ones
 uniform float dof = 0.0;         // blur growth per unit away from focus
@@ -26,15 +28,9 @@ uniform uint sparkle_seed = 0u;     // changes every few frames
 varying float flare;
 varying float blur;
 varying float dim;
+varying float shown;
 
-float hash(uint x) {
-	x ^= x >> 16u;
-	x *= 0x7feb352du;
-	x ^= x >> 15u;
-	x *= 0x846ca68bu;
-	x ^= x >> 16u;
-	return float(x) / 4294967295.0;
-}
+#include "res://shaders/common.gdshaderinc"
 
 void vertex() {
 	vec3 center = (VIEW_MATRIX * vec4(MODEL_MATRIX[3].xyz, 1.0)).xyz;
@@ -44,6 +40,7 @@ void vertex() {
 	dir = sp > 1e-4 ? dir / sp : vec2(1.0, 0.0);
 	vec2 perp = vec2(-dir.y, dir.x);
 	uint id = uint(INSTANCE_ID);
+	shown = amount * presence_fade(id, presence);
 
 	// A few random particles flare up while treble is loud.
 	float chance = treble * treble * 0.06 * treble_sparkle;
@@ -76,5 +73,5 @@ void fragment() {
 	vec3 c = mix(COLOR.rgb, vec3(1.0), clamp(kick * white_flash + flare * 0.3, 0.0, 1.0));
 	float b = intensity * dim * (1.0 + energy * 0.4 + kick * kick_flash + flare * 1.5);
 	ALBEDO = c * b;
-	ALPHA = a * COLOR.a;
+	ALPHA = a * COLOR.a * shown;
 }

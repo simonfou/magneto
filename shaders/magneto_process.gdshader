@@ -39,30 +39,7 @@ uniform float mid_swirl = 1.5;
 uniform float mid_turb = 0.5;
 uniform float treble_jitter = 0.6;
 
-float hash(uint x) {
-	x ^= x >> 16u;
-	x *= 0x7feb352du;
-	x ^= x >> 15u;
-	x *= 0x846ca68bu;
-	x ^= x >> 16u;
-	return float(x) / 4294967295.0;
-}
-
-vec3 random_unit(uint seed) {
-	float z = hash(seed) * 2.0 - 1.0;
-	float a = hash(seed + 1u) * TAU;
-	float r = sqrt(1.0 - z * z);
-	return vec3(r * cos(a), r * sin(a), z);
-}
-
-// Cheap swirly flow: each component depends on the other axes, which
-// gives long ribbon-like streams rather than random noise.
-vec3 flow_noise(vec3 p, float t) {
-	return vec3(
-		sin(p.y * 1.3 + t) + cos(p.z * 1.7 - t * 0.7),
-		sin(p.z * 1.1 - t * 0.8) + cos(p.x * 1.5 + t * 0.6),
-		sin(p.x * 1.2 + t * 0.9) + cos(p.y * 1.4 - t * 0.5)) * 0.5;
-}
+#include "res://shaders/common.gdshaderinc"
 
 // Each particle belongs to one "home" node for its whole life: that node
 // holds it like a spring, so the scene reads as separate glowing clusters

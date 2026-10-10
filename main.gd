@@ -4,8 +4,12 @@ extends Node3D
 ## playing (see spotify.gd), analysed into bass / mid / treble / kick.
 ## Visual modes live in modes.gd; in Auto the mode changes with each song,
 ## or the right-click menu locks one (remembered across runs).
+## Three particle systems (dots, thin trail lines, wide ribbons) plus a
+## white star and an optional black bubble per node; each mode doses them.
+## The music's overall loudness drives "presence": quiet passages show
+## little more than the stars, loud ones fill out (like the original).
 ##
-## Keys: right-click = menu, 1-5 = lock a mode, 0 or A = auto, N = next,
+## Keys: right-click = menu, 1-6 = lock a mode, 0 or A = auto, N = next,
 ##       F / F11 = fullscreen, D = level meters, Esc = quit.
 ## CLI (after `--`): --shot=<png> [--frames=N]  save a frame and quit
 ##                   --mode=<index>             lock a mode for this run
@@ -33,9 +37,21 @@ const MENU_FULLSCREEN := 201
 const MENU_METERS := 202
 const MENU_QUIT := 203
 
+var _modes: Array = Modes.all()
 var _env: Environment
 var _process_mat: ShaderMaterial
 var _draw_mat: ShaderMaterial
+var _lines_proc: ShaderMaterial
+var _lines_draw: ShaderMaterial
+var _rib_proc: ShaderMaterial
+var _rib_draw: ShaderMaterial
+var _dots: GPUParticles3D
+var _lines: GPUParticles3D
+var _ribbons: GPUParticles3D
+var _stars: Array[MeshInstance3D] = []
+var _bubbles: Array[MeshInstance3D] = []
+var _group_mats := {}  # modes.gd group -> materials that receive it
+var _uniforms := {}    # material -> names of the uniforms its shader has
 var _camera: Camera3D
 var _spectrum: AudioEffectSpectrumAnalyzerInstance
 var _spotify: Spotify
@@ -48,7 +64,7 @@ var _menu: PopupMenu
 
 var _mode := 0
 var _locked := -1  # -1 = auto
-var _cur := {}     # live (blended) parameters, same shape as a Modes.LIST entry
+var _cur := {}     # live (blended) parameters, same shape as a _modes entry
 var _since_switch := 0.0
 var _first_track := true
 
@@ -69,6 +85,9 @@ var _kick := 0.0
 var _since_kick := 1.0
 var _kick_count := 0
 var _centroid := Vector3.ZERO
+# Breathing: overall loudness against the loudest recent passage.
+var _loud_hi := -200.0
+var _presence := 0.0
 
 var _args := {}
 var _frame := 0
@@ -86,9 +105,9 @@ func _ready() -> void:
 	if _args.has("dump"):
 		_dump = FileAccess.open(_args.dump, FileAccess.WRITE)
 	if _args.has("mode"):
-		_locked = clampi(int(_args.mode), 0, Modes.LIST.size() - 1)
+		_locked = clampi(int(_args.mode), 0, _modes.size() - 1)
 	_mode = maxi(_locked, 0)
-	_cur = Modes.LIST[_mode].duplicate(true)
+	_cur = _modes[_mode].duplicate(true)
 
 	_build_environment()
 	_build_camera()
@@ -120,29 +139,102 @@ func _build_camera() -> void:
 
 
 func _build_particles() -> void:
-	_process_mat = ShaderMaterial.new()
-	_process_mat.shader = load("res://shaders/magneto_process.gdshader")
-	_process_mat.set_shader_parameter("node_count", NODE_COUNT)
-
-	_draw_mat = ShaderMaterial.new()
-	_draw_mat.shader = load("res://shaders/magneto_draw.gdshader")
+	_process_mat = _shader_mat("res://shaders/magneto_process.gdshader")
+	_draw_mat = _shader_mat("res://shaders/magneto_draw.gdshader")
 	var quad := QuadMesh.new()
 	quad.size = Vector2.ONE
 	quad.material = _draw_mat
+	_dots = GPUParticles3D.new()
+	_dots.amount = 6000
+	_dots.lifetime = 8.0
+	_dots.preprocess = 4.0
+	_dots.process_material = _process_mat
+	_dots.draw_pass_1 = quad
 
-	var p := GPUParticles3D.new()
-	p.amount = 30000
-	p.lifetime = 8.0
-	p.preprocess = 4.0
-	p.fixed_fps = 60
-	p.randomness = 0.5
-	p.visibility_aabb = AABB(Vector3(-14, -14, -14), Vector3(28, 28, 28))
-	p.process_material = _process_mat
-	p.draw_pass_1 = quad
+	var tube := TubeTrailMesh.new()
+	tube.radius = 0.006
+	tube.radial_steps = 4
+	tube.sections = 12
+	tube.section_length = 0.1
+	_lines_proc = _shader_mat("res://shaders/trail_process.gdshader")
+	_lines_draw = _shader_mat("res://shaders/trail_draw.gdshader")
+	_lines = _trail_system(tube, _lines_proc, _lines_draw, 900, 2.0, 0.7)
+
+	var ribbon := RibbonTrailMesh.new()
+	ribbon.shape = RibbonTrailMesh.SHAPE_FLAT
+	ribbon.size = 0.3
+	ribbon.sections = 12
+	ribbon.section_length = 0.1
+	_rib_proc = _shader_mat("res://shaders/trail_process.gdshader")
+	_rib_draw = _shader_mat("res://shaders/trail_draw.gdshader")
+	_rib_draw.set_shader_parameter("soft_edges", 1.0)
+	_ribbons = _trail_system(ribbon, _rib_proc, _rib_draw, 220, 4.0, 1.2)
+
+	for p: GPUParticles3D in [_dots, _lines, _ribbons]:
+		p.fixed_fps = 60
+		p.randomness = 0.5
+		p.visibility_aabb = AABB(Vector3(-14, -14, -14), Vector3(28, 28, 28))
+	for m: ShaderMaterial in [_process_mat, _lines_proc, _rib_proc]:
+		m.set_shader_parameter("node_count", NODE_COUNT)
+	_group_mats = {
+		"dots_process": [_process_mat],
+		"dots_draw": [_draw_mat],
+		"lines": [_lines_proc, _lines_draw],
+		"ribbons": [_rib_proc, _rib_draw],
+	}
+
+	var star_mesh := QuadMesh.new()
+	var sphere := SphereMesh.new()
+	sphere.radial_segments = 48
+	sphere.rings = 24
+	for i in NODE_COUNT:
+		var star := MeshInstance3D.new()
+		star.mesh = star_mesh
+		star.material_override = _shader_mat("res://shaders/star.gdshader")
+		_stars.append(star)
+		var bubble := MeshInstance3D.new()
+		bubble.mesh = sphere
+		bubble.material_override = _shader_mat("res://shaders/bubble.gdshader")
+		bubble.visible = false
+		_bubbles.append(bubble)
+
 	# Uniforms must exist before preprocess runs.
 	_blend_params(0.0)
 	_update_nodes(0.0)
-	add_child(p)
+	for n: Node3D in [_dots, _lines, _ribbons]:
+		add_child(n)
+	for n: Node3D in _bubbles + _stars:
+		add_child(n)
+
+
+func _shader_mat(path: String) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = load(path)
+	var names := {}
+	for u in m.shader.get_shader_uniform_list():
+		names[u.name] = true
+	_uniforms[m] = names
+	return m
+
+
+func _trail_system(mesh: PrimitiveMesh, proc: ShaderMaterial, draw: ShaderMaterial,
+		amount: int, lifetime: float, trail_time: float) -> GPUParticles3D:
+	mesh.material = draw
+	var p := GPUParticles3D.new()
+	p.amount = amount
+	p.lifetime = lifetime
+	p.trail_enabled = true
+	p.trail_lifetime = trail_time
+	p.process_material = proc
+	p.draw_pass_1 = mesh
+	return p
+
+
+## Set a uniform on every given material whose shader declares it.
+func _set_param(mats: Array, uniform: String, value: Variant) -> void:
+	for m: ShaderMaterial in mats:
+		if _uniforms[m].has(uniform):
+			m.set_shader_parameter(uniform, value)
 
 
 func _build_audio() -> void:
@@ -196,8 +288,8 @@ func _build_ui() -> void:
 	_toast.offset_bottom = -40
 	_toast.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_toast.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
-	_toast.add_theme_font_size_override("font_size", 26)
-	_toast.add_theme_color_override("font_color", Color(0.85, 0.9, 1.0))
+	_toast.add_theme_font_size_override("font_size", 18)
+	_toast.add_theme_color_override("font_color", Color(0.75, 0.8, 0.85))
 	_toast.add_theme_color_override("font_outline_color", Color.BLACK)
 	_toast.add_theme_constant_override("outline_size", 6)
 	_toast.modulate.a = 0.0
@@ -206,8 +298,8 @@ func _build_ui() -> void:
 	_menu = PopupMenu.new()
 	_menu.add_radio_check_item("Auto: change with each song   (0)", MENU_AUTO)
 	_menu.add_separator("Lock on")
-	for i in Modes.LIST.size():
-		_menu.add_radio_check_item("%s   (%d)" % [Modes.LIST[i].name, i + 1], i)
+	for i in _modes.size():
+		_menu.add_radio_check_item("%s   (%d)" % [_modes[i].name, i + 1], i)
 	_menu.add_separator()
 	_menu.add_item("Next mode   (N)", MENU_NEXT)
 	_menu.add_item("Fullscreen   (F)", MENU_FULLSCREEN)
@@ -234,23 +326,29 @@ func _process(delta: float) -> void:
 	var sc: Dictionary = _cur.scene
 	var energy: float = (_levels.bass + _levels.mid + _levels.treble) / 3.0
 	_turb_phase += delta * sc.turb_speed * (1.0 + _levels.mid)
-	_process_mat.set_shader_parameter("turb_phase", _turb_phase)
-	_process_mat.set_shader_parameter("bass", _levels.bass)
-	_process_mat.set_shader_parameter("mid", _levels.mid)
 	var kick := _kick * REACTIVITY
 	var treble: float = _levels.treble * REACTIVITY
-	_process_mat.set_shader_parameter("treble", treble)
-	_process_mat.set_shader_parameter("kick", kick)
-	_draw_mat.set_shader_parameter("energy", energy)
-	_draw_mat.set_shader_parameter("kick", kick)
-	_draw_mat.set_shader_parameter("treble", treble)
+	var all_mats := [_process_mat, _draw_mat, _lines_proc, _lines_draw, _rib_proc, _rib_draw]
+	_set_param(all_mats, "turb_phase", _turb_phase)
+	_set_param(all_mats, "bass", _levels.bass)
+	_set_param(all_mats, "mid", _levels.mid)
+	_set_param(all_mats, "treble", treble)
+	_set_param(all_mats, "kick", kick)
+	_set_param(all_mats, "energy", energy)
+	_set_param(all_mats, "presence", maxf(sc.breath_min, _presence))
 	_draw_mat.set_shader_parameter("sparkle_seed", int(_t * 12.0))
+	# Systems a mode doesn't use stop simulating altogether.
+	_dots.visible = _cur.dots_draw.amount > 0.01
+	_lines.visible = _cur.lines.amount > 0.01
+	_ribbons.visible = _cur.ribbons.amount > 0.01
+	for p: GPUParticles3D in [_dots, _lines, _ribbons]:
+		p.emitting = p.visible
 	_env.glow_intensity = sc.glow * (1.0 + (_levels.bass * 0.5 + kick) * sc.glow_pulse * 0.5)
 
 	if _hud.visible:
-		_hud.text = "%s  [%s]\nbass   %s\nmid    %s\ntreble %s\nkick   %s" % [
-			Modes.LIST[_mode].name, "auto" if _locked < 0 else "locked",
-			_bar(_levels.bass), _bar(_levels.mid), _bar(_levels.treble), _bar(_kick)]
+		_hud.text = "%s  [%s]\nbass     %s\nmid      %s\ntreble   %s\nkick     %s\npresence %s" % [
+			_modes[_mode].name, "auto" if _locked < 0 else "locked",
+			_bar(_levels.bass), _bar(_levels.mid), _bar(_levels.treble), _bar(_kick), _bar(_presence)]
 	_frame += 1
 	_check_cli()
 
@@ -281,6 +379,19 @@ func _analyse(delta: float) -> void:
 		# Fast attack, slower release.
 		var k := 15.0 if v > _levels[b] else 4.0
 		_levels[b] = lerpf(_levels[b], v, 1.0 - exp(-k * delta))
+
+	# Presence: broadband loudness against the loudest recent passage (the
+	# ceiling sinks only 0.25 dB/s, so a quiet intro or bridge reads quiet).
+	var wide := _spectrum.get_magnitude_for_frequency_range(20, 16000)
+	var wide_db := linear_to_db(maxf((wide.x + wide.y) * 0.5, 1e-7))
+	var target := 0.0
+	if wide_db > SILENCE_DB:
+		if _loud_hi < SILENCE_DB:
+			_loud_hi = wide_db
+		_loud_hi = maxf(wide_db, _loud_hi - delta * 0.25)
+		target = clampf((wide_db - (_loud_hi - 18.0)) / 18.0, 0.0, 1.0)
+	var pk := 2.5 if target > _presence else 0.7
+	_presence = lerpf(_presence, target, 1.0 - exp(-pk * delta))
 
 	# Beat: the bass envelope jumps above its recent level by more than it
 	# usually does for this track. Thresholds tuned offline on --dump data
@@ -327,18 +438,17 @@ func _quit() -> void:
 
 func _blend_params(delta: float) -> void:
 	# delta 0 = snap (first frame); otherwise ease toward the target mode.
-	var target: Dictionary = Modes.LIST[_mode]
+	var target: Dictionary = _modes[_mode]
 	var w := 1.0 if delta == 0.0 else 1.0 - exp(-BLEND_RATE * delta)
-	for group in ["process", "draw", "scene"]:
+	for group: String in Modes.DEFAULTS:
 		var cur: Dictionary = _cur[group]
 		for key in cur:
 			cur[key] = lerpf(cur[key], target[group][key], w)
+		if _group_mats.has(group):
+			for key in cur:
+				_set_param(_group_mats[group], key, cur[key])
 	for i in _cur.palette.size():
 		_cur.palette[i] = _cur.palette[i].lerp(target.palette[i], w)
-	for key in _cur.process:
-		_process_mat.set_shader_parameter(key, _cur.process[key])
-	for key in _cur.draw:
-		_draw_mat.set_shader_parameter(key, _cur.draw[key])
 
 
 func _set_mode(i: int) -> void:
@@ -348,7 +458,7 @@ func _set_mode(i: int) -> void:
 
 func _next_mode() -> void:
 	# Random, but never the same one twice in a row.
-	var n := Modes.LIST.size()
+	var n := _modes.size()
 	_set_mode((_mode + 1 + randi() % (n - 1)) % n)
 
 
@@ -356,7 +466,7 @@ func _set_lock(i: int) -> void:
 	_locked = i
 	if i >= 0:
 		_set_mode(i)
-		_show_toast("Locked: " + Modes.LIST[i].name)
+		_show_toast("Locked: " + _modes[i].name)
 	else:
 		_show_toast("Auto: changes with each song")
 	_save_settings()
@@ -385,7 +495,7 @@ func _show_toast(text: String) -> void:
 func _load_settings() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(SETTINGS_PATH) == OK:
-		_locked = clampi(int(cfg.get_value("view", "locked", -1)), -1, Modes.LIST.size() - 1)
+		_locked = clampi(int(cfg.get_value("view", "locked", -1)), -1, _modes.size() - 1)
 
 
 func _save_settings() -> void:
@@ -403,7 +513,8 @@ func _update_nodes(delta: float) -> void:
 	var pos := PackedVector3Array()
 	var axes := PackedVector3Array()
 	var hues := PackedVector3Array()
-	var spread: float = sc.spread * (1.0 + _levels.bass * 0.2)
+	# The scene gathers in on quiet passages and opens up on loud ones.
+	var spread: float = sc.spread * (0.65 + 0.35 * _presence) * (1.0 + _levels.bass * 0.2)
 	# Shared axis that "align" pulls every node toward (disks in Galaxy).
 	var common := Vector3(sin(_t * 0.03) * 0.3, 1.0, cos(_t * 0.02) * 0.3).normalized()
 	for i in NODE_COUNT:
@@ -425,10 +536,31 @@ func _update_nodes(delta: float) -> void:
 	_centroid = Vector3.ZERO
 	for v in pos:
 		_centroid += v / NODE_COUNT
-	_process_mat.set_shader_parameter("nodes", pos)
-	_process_mat.set_shader_parameter("centroid", _centroid)
-	_process_mat.set_shader_parameter("axes", axes)
-	_process_mat.set_shader_parameter("hues", hues)
+	var procs := [_process_mat, _lines_proc, _rib_proc]
+	_set_param(procs, "nodes", pos)
+	_set_param(procs, "centroid", _centroid)
+	_set_param(procs, "axes", axes)
+	_set_param(procs, "hues", hues)
+
+	var kick := _kick * REACTIVITY
+	var dp: Dictionary = _cur.dots_process
+	# Bubbles track the dots' shell so the dots sit on their surface.
+	var inflate: float = 1.0 + _levels.bass * dp.bass_shell + kick * dp.kick_shell
+	var bubble_r: float = (dp.shell_min + dp.shell_max) * 0.5 * inflate * 0.97 * sc.bubble
+	var star_s: float = sc.star_size * (1.0 + _levels.bass * 0.15 + kick * 0.2)
+	for i in NODE_COUNT:
+		var hue := Color(hues[i].x, hues[i].y, hues[i].z)
+		_stars[i].position = pos[i]
+		_stars[i].scale = Vector3.ONE * star_s
+		var sm: ShaderMaterial = _stars[i].material_override
+		sm.set_shader_parameter("glow", sc.star_glow)
+		var tint := Color.WHITE.lerp(hue, 0.15)
+		sm.set_shader_parameter("tint", Vector3(tint.r, tint.g, tint.b))
+		_bubbles[i].visible = bubble_r > 0.02
+		_bubbles[i].position = pos[i]
+		_bubbles[i].scale = Vector3.ONE * maxf(bubble_r, 0.001)
+		var bm: ShaderMaterial = _bubbles[i].material_override
+		bm.set_shader_parameter("rim_color", hues[i])
 
 
 func _update_camera(delta: float) -> void:
@@ -449,7 +581,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed and not event.echo):
 		return
 	var key: Key = event.keycode
-	if key >= KEY_1 and key < KEY_1 + Modes.LIST.size():
+	if key >= KEY_1 and key < KEY_1 + _modes.size():
 		_set_lock(key - KEY_1)
 		return
 	match key:
@@ -470,7 +602,7 @@ func _open_menu(at: Vector2) -> void:
 		var id := _menu.get_item_id(idx)
 		if id == MENU_AUTO:
 			_menu.set_item_checked(idx, _locked < 0)
-		elif id >= 0 and id < Modes.LIST.size():
+		elif id >= 0 and id < _modes.size():
 			_menu.set_item_checked(idx, id == _locked)
 	_menu.position = Vector2i(at)
 	_menu.popup()
@@ -483,10 +615,10 @@ func _on_menu(id: int) -> void:
 		MENU_NEXT:
 			# Locked: move the lock along. Auto: just switch now.
 			if _locked >= 0:
-				_set_lock((_locked + 1) % Modes.LIST.size())
+				_set_lock((_locked + 1) % _modes.size())
 			else:
 				_next_mode()
-				_show_toast(Modes.LIST[_mode].name)
+				_show_toast(_modes[_mode].name)
 		MENU_FULLSCREEN:
 			var full := DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN
 			DisplayServer.window_set_mode(
@@ -496,7 +628,7 @@ func _on_menu(id: int) -> void:
 		MENU_QUIT:
 			_quit()
 		_:
-			if id >= 0 and id < Modes.LIST.size():
+			if id >= 0 and id < _modes.size():
 				_set_lock(id)
 
 
@@ -521,8 +653,9 @@ func _check_cli() -> void:
 	var limit := int(_args.get("frames", "240"))
 	if _args.has("selftest") or _args.has("meter"):
 		if _frame % 30 == 0:
-			print("t %5.1f  frame %d  bass %.2f  mid %.2f  treble %.2f  kicks %d" % [
-				_t, _frame, _levels.bass, _levels.mid, _levels.treble, _kick_count])
+			print("t %5.1f  frame %d  bass %.2f  mid %.2f  treble %.2f  kicks %d  presence %.2f  fps %d" % [
+				_t, _frame, _levels.bass, _levels.mid, _levels.treble, _kick_count, _presence,
+				Engine.get_frames_per_second()])
 			_kick_count = 0
 		if _frame >= limit:
 			_quit()
