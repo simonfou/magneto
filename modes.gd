@@ -9,8 +9,8 @@
 ##   lines        -> trail_process + trail_draw, thin tube trails
 ##   ribbons      -> trail_process + trail_draw, wide flat ribbons
 ##   scene        -> main.gd (nodes, stars, bubbles, camera, glow, breathing)
-## A system with amount 0 is hidden. Flashes stay low on purpose:
-## flashing was the most chaotic part. Shape: stretch 0 = round dots.
+## A system with amount 0 is hidden. Flashes stay low on purpose: in
+## testing, flashing read as the most chaotic part. Shape: stretch 0 = round dots.
 
 const DEFAULTS := {
 	"dots_process": {

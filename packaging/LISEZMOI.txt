@@ -1,0 +1,28 @@
+MAGNETO - visualiseur de musique (style iTunes Magnetosphere)
+=============================================================
+
+Installation
+  1. Extraire tout le zip dans un dossier.
+     Garder le fichier .dll a cote de magneto.exe (c'est lui qui capte le son).
+  2. Double-cliquer sur magneto.exe.
+     Windows peut afficher "Windows a protege votre ordinateur" (l'exe n'est
+     pas signe) : cliquer "Informations complementaires" puis "Executer quand meme".
+
+Requis : Windows 10 version 2004 (mai 2020) ou plus recent.
+
+Le son
+  Magneto reagit a TOUT ce que le PC joue (Spotify, YouTube, autre lecteur),
+  SAUF Discord : les voix sur Discord ne font pas bouger l'animation.
+  Le mode visuel change a chaque nouvelle chanson (detectee par le court
+  silence entre deux pistes).
+
+Touches
+  Clic droit     menu (choisir/verrouiller un mode)
+  1 a 6          verrouiller un mode     0  revenir en automatique
+  N              mode suivant            F  plein ecran
+  D              vu-metres + diagnostic  Echap  quitter
+
+Si rien ne bouge avec la musique
+  Appuyer sur D : la ligne "capture" indique ce que fait la capture du son
+  (ou le code d'erreur Windows). Une capture d'ecran de cette ligne permet
+  de diagnostiquer le probleme.
